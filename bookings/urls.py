@@ -6,8 +6,8 @@ from .views import (
     RoomSearchView, 
     SelectRoomView, 
     AddGuestDetailsView, 
-    InitiatePaymentView, 
-    PaymentCallbackView
+    CreateRazorpayOrderView,
+    VerifyPaymentView
 )
 
 urlpatterns = [
@@ -17,6 +17,6 @@ urlpatterns = [
     path('rooms/search/', RoomSearchView.as_view(), name='room-search'),
     path('booking/select-rooms/', SelectRoomView.as_view(), name='select-rooms'),
     path('booking/add-guests/', AddGuestDetailsView.as_view(), name='add-guests'),
-    path('booking/initiate-payment/', InitiatePaymentView.as_view(), name='initiate-payment'),
-    path('booking/payment-callback/', PaymentCallbackView.as_view(), name='payment-callback'),
+    path('booking/create-order/', CreateRazorpayOrderView.as_view(), name='create-order'),
+    path('booking/verify-payment/', VerifyPaymentView.as_view(), name='verify-payment'),
 ]
