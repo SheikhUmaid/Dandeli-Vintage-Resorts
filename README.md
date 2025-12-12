@@ -11,8 +11,8 @@ This project is a Django-based REST API for a resort booking system. It features
     1.  Searching for available rooms by location.
     2.  Creating a temporary "booking attempt" after selecting rooms.
     3.  Adding guest details.
-    4.  Initiating payment with Razorpay.
-    5.  Confirming the booking upon successful payment verification via a secure webhook.
+    4.  Creating a Razorpay order.
+    5.  Confirming the booking upon successful client-side payment verification.
 - **Scalable Architecture:** The separation of booking attempts from final bookings minimizes race conditions and improves reliability.
 
 ## Getting Started
@@ -32,7 +32,6 @@ This project is a Django-based REST API for a resort booking system. It features
     export DJANGO_SECRET_KEY='your-django-secret-key'
     export RAZORPAY_KEY_ID='your-razorpay-key-id'
     export RAZORPAY_KEY_SECRET='your-razorpay-key-secret'
-    export RAZORPAY_WEBHOOK_SECRET='your-razorpay-webhook-secret'
     ```
     See the "Environment Variables" section for more details.
 
@@ -62,7 +61,6 @@ This project is a Django-based REST API for a resort booking system. It features
 -   `DJANGO_SECRET_KEY`: A secret key for a particular Django installation. This is used to provide cryptographic signing, and should be set to a unique, unpredictable value.
 -   `RAZORPAY_KEY_ID`: Your Razorpay Key ID.
 -   `RAZORPAY_KEY_SECRET`: Your Razorpay Key Secret.
--   `RAZORPAY_WEBHOOK_SECRET`: The secret you configure in your Razorpay webhook settings. This is used to verify that incoming webhook requests are genuinely from Razorpay.
 
 ## API Documentation
 
@@ -135,31 +133,6 @@ Searches for available rooms based on location, dates, and number of guests.
 -   `check_out_date`: Format `YYYY-MM-DD`.
 -   `guests`: The total number of guests.
 
-**Response:**
-A list of resorts matching the criteria, each with a list of available rooms.
-```json
-[
-    {
-        "resort_id": 1,
-        "resort_name": "Beachside Resort",
-        "location": "Goa",
-        "available_rooms": [
-            {
-                "id": 101,
-                "room_number": "A101",
-                "capacity": 2,
-                "price_per_night": "7500.00",
-                "images": [
-                    {
-                        "image": "/media/room_images/beach_view.jpg"
-                    }
-                ]
-            }
-        ]
-    }
-]
-```
-
 ---
 
 #### 2. `POST /api/booking/select-rooms/`
@@ -177,14 +150,6 @@ Creates a `BookingAttempt` and locks in the rooms the user has chosen.
 }
 ```
 
-**Response:**
-```json
-{
-    "message": "Rooms selected successfully. Proceed to add guest details.",
-    "booking_attempt_id": 123
-}
-```
-
 ---
 
 #### 3. `POST /api/booking/add-guests/`
@@ -196,15 +161,14 @@ Adds the details for each guest to the booking attempt.
 {
     "booking_attempt_id": 123,
     "guests": [
-        {"room_id": 101, "name": "Alice", "age": 30},
-        {"room_id": 101, "name": "Bob", "age": 32}
+        {"room_id": 101, "name": "Alice", "age": 30}
     ]
 }
 ```
 
 ---
 
-#### 4. `POST /api/booking/initiate-payment/`
+#### 4. `POST /api/booking/create-order/`
 
 Calculates the total price and creates a Razorpay order.
 
@@ -218,22 +182,35 @@ Calculates the total price and creates a Razorpay order.
 **Response:**
 ```json
 {
-    "message": "Payment initiated.",
-    "payment_id": 45,
-    "razorpay_order_id": "order_XXXXXXXXXXXXXX",
-    "razorpay_key": "rzp_test_XXXXXXXXXXXXXX",
-    "amount": 75000.00
+    "order_id": "order_XXXXXXXXXXXXXX",
+    "amount": 3750000,
+    "currency": "INR",
+    "key": "rzp_test_XXXXXXXXXXXXXX",
+    "booking_attempt_id": 123,
+    "payment_id": 45
 }
 ```
-The frontend should use the `razorpay_order_id` and `razorpay_key` to open the Razorpay payment dialog.
 
 ---
 
-#### 5. `POST /api/booking/payment-callback/`
+#### 5. `POST /api/booking/verify-payment/`
 
-A **webhook endpoint** for Razorpay to send payment status updates. This endpoint is **not for direct client use**. It must be configured in the Razorpay dashboard for the `payment.captured` event.
+After the user completes the payment, the frontend calls this endpoint to verify the payment signature. If successful, the booking is confirmed.
 
-**Behavior:**
--   The endpoint uses the `RAZORPAY_WEBHOOK_SECRET` to verify the signature of the incoming request, ensuring it's from Razorpay.
--   If the payment is successful (`payment.captured` event), the system converts the `BookingAttempt` into a `FinalBooking`, permanently reserving the rooms.
--   If the payment fails or the signature is invalid, the booking attempt is marked as failed and the rooms are released.
+**Request Body:**
+```json
+{
+    "razorpay_order_id": "order_XXXXXXXXXXXXXX",
+    "razorpay_payment_id": "pay_XXXXXXXXXXXXXX",
+    "razorpay_signature": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+**Response (Success):**
+```json
+{
+    "success": true,
+    "message": "Payment verified successfully",
+    "booking_id": 5
+}
+```

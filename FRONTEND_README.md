@@ -97,13 +97,6 @@ A list of resorts matching the criteria, each with a list of available rooms.
                         "image": "/media/room_images/beach_view.jpg"
                     }
                 ]
-            },
-            {
-                "id": 102,
-                "room_number": "A102",
-                "capacity": 4,
-                "price_per_night": "12000.00",
-                "images": []
             }
         ]
     }
@@ -112,16 +105,16 @@ A list of resorts matching the criteria, each with a list of available rooms.
 
 #### 2. `POST /booking/select-rooms/`
 
-Creates a `BookingAttempt` and locks in the rooms the user has chosen. This is the first step that requires user authentication in the booking flow.
+Creates a `BookingAttempt` and locks in the rooms the user has chosen.
 
 **Request Body:**
 ```json
 {
     "resort_id": 1,
-    "room_ids": [101, 102],
+    "room_ids": [101],
     "check_in_date": "2024-12-20",
     "check_out_date": "2024-12-25",
-    "guests": 6
+    "guests": 2
 }
 ```
 
@@ -143,18 +136,14 @@ Adds the details for each guest to the booking attempt.
     "booking_attempt_id": 123,
     "guests": [
         {"room_id": 101, "name": "Alice", "age": 30},
-        {"room_id": 101, "name": "Bob", "age": 32},
-        {"room_id": 102, "name": "Charlie", "age": 10},
-        {"room_id": 102, "name": "Diana", "age": 12},
-        {"room_id": 102, "name": "Eve", "age": 5},
-        {"room_id": 102, "name": "Frank", "age": 6}
+        {"room_id": 101, "name": "Bob", "age": 32}
     ]
 }
 ```
 
-#### 4. `POST /booking/initiate-payment/`
+#### 4. `POST /booking/create-order/`
 
-Calculates the total price and creates a Razorpay order.
+Calculates the total price for the booking attempt and creates a Razorpay order.
 
 **Request Body:**
 ```json
@@ -164,17 +153,45 @@ Calculates the total price and creates a Razorpay order.
 ```
 
 **Response:**
+The frontend should use these details to open the Razorpay payment dialog.
 ```json
 {
-    "message": "Payment initiated.",
-    "payment_id": 45,
-    "razorpay_order_id": "order_XXXXXXXXXXXXXX",
-    "razorpay_key": "rzp_test_XXXXXXXXXXXXXX",
-    "amount": 287500.00
+    "order_id": "order_XXXXXXXXXXXXXX",
+    "amount": 3750000, 
+    "currency": "INR",
+    "key": "rzp_test_XXXXXXXXXXXXXX",
+    "booking_attempt_id": 123,
+    "payment_id": 45
 }
 ```
-The frontend should use the `razorpay_order_id` and `razorpay_key` to open the Razorpay payment dialog.
 
-#### 5. Payment Confirmation
+#### 5. `POST /booking/verify-payment/`
 
-Payment confirmation is handled via a backend webhook. The frontend does not need to call a specific endpoint for this. Once the user completes the Razorpay payment, the backend will automatically confirm the booking.
+After the user completes the payment in the Razorpay dialog, the frontend must call this endpoint to verify the payment with the backend.
+
+**Request Body:**
+```json
+{
+    "razorpay_order_id": "order_XXXXXXXXXXXXXX",
+    "razorpay_payment_id": "pay_XXXXXXXXXXXXXX",
+    "razorpay_signature": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+**Response (Success):**
+Indicates that the payment was successful and the booking is confirmed.
+```json
+{
+    "success": true,
+    "message": "Payment verified successfully",
+    "booking_id": 5
+}
+```
+
+**Response (Failure):**
+```json
+{
+    "success": false,
+    "message": "Payment verification failed"
+}
+```

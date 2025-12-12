@@ -1,3 +1,4 @@
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -246,105 +247,139 @@ class AddGuestDetailsView(APIView):
 
         return Response({'message': 'Guest details added successfully.'}, status=status.HTTP_200_OK)
 
-class InitiatePaymentView(APIView):
+class CreateRazorpayOrderView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        booking_attempt_id = request.data.get('booking_attempt_id')
+        booking_attempt_id = request.data.get("booking_attempt_id")
 
         if not booking_attempt_id:
-            return Response({'error': 'Booking attempt ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Missing booking_attempt_id"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             booking_attempt = BookingAttempt.objects.get(pk=booking_attempt_id, user=request.user)
         except BookingAttempt.DoesNotExist:
-            return Response({'error': 'Invalid booking attempt ID.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Invalid booking_attempt_id"}, status=status.HTTP_404_NOT_FOUND)
 
+        # Calculate total amount
         total_price = 0
         attempt_rooms = BookingAttemptRooms.objects.filter(attempt=booking_attempt)
         duration = (booking_attempt.check_out - booking_attempt.check_in).days
         for attempt_room in attempt_rooms:
             total_price += attempt_room.room.price_per_night * duration
+        
+        if total_price <= 0:
+            return Response({"error": "Calculated amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
 
         client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
-        payment_data = {
-            'amount': int(total_price * 100),  # Amount in paisa
-            'currency': 'INR',
-            'receipt': f'booking_{booking_attempt_id}',
-            'payment_capture': 1
-        }
-        order = client.order.create(data=payment_data)
 
+        # Razorpay expects amount in paise
+        razorpay_order = client.order.create({
+            "amount": int(total_price) * 100,
+            "currency": "INR",
+            "receipt": f"booking_{booking_attempt.id}",
+            "payment_capture": 1
+        })
+
+        # Create a payment record
         payment = Payment.objects.create(
             attempt=booking_attempt,
             amount=total_price,
-            provider='Razorpay',
-            status='initiated',
-            provider_payment_id=order['id']
+            provider="Razorpay",
+            provider_payment_id=razorpay_order["id"], # Store Razorpay Order ID
+            status="initiated",
         )
 
         return Response({
-            'message': 'Payment initiated.',
-            'payment_id': payment.id,
-            'razorpay_order_id': order['id'],
-            'razorpay_key': settings.RAZORPAY_KEY_ID,
-            'amount': total_price
-        }, status=status.HTTP_200_OK)
+            "order_id": razorpay_order["id"],
+            "amount": razorpay_order["amount"],
+            "currency": "INR",
+            "key": settings.RAZORPAY_KEY_ID,
+            "booking_attempt_id": booking_attempt.id,
+            "payment_id": payment.id
+        }, status=status.HTTP_201_CREATED)
 
 
-class PaymentCallbackView(APIView):
-    @csrf_exempt
+class VerifyPaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
+        data = request.data
+        order_id = data.get("razorpay_order_id")
+        payment_id = data.get("razorpay_payment_id")
+        signature = data.get("razorpay_signature")
+
+        if not all([order_id, payment_id, signature]):
+            return Response(
+                {"error": "Incomplete payment data."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+        params_dict = {
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": signature
+        }
+
         try:
-            body = request.body.decode('utf-8')
-            signature = request.headers.get('x-razorpay-signature', '')
-            client.utility.verify_webhook_signature(body, signature, settings.RAZORPAY_WEBHOOK_SECRET)
+            # Verify signature
+            client.utility.verify_payment_signature(params_dict)
+
+            # Fetch and update payment & booking
+            payment = Payment.objects.filter(provider_payment_id=order_id).first()
+            if not payment:
+                return Response({"error": "Payment record not found."}, status=status.HTTP_404_NOT_FOUND)
             
-            webhook_data = json.loads(body)
-            razorpay_order_id = webhook_data['payload']['payment']['entity']['order_id']
-            razorpay_payment_id = webhook_data['payload']['payment']['entity']['id']
+            # Check if booking attempt belongs to the user
+            booking_attempt = payment.attempt
+            if booking_attempt.user != request.user:
+                 return Response({"error": "Booking does not belong to the authenticated user."}, status=status.HTTP_403_FORBIDDEN)
 
-            payment = Payment.objects.get(provider_payment_id=razorpay_order_id)
-            payment.provider_payment_id = razorpay_payment_id # Store the actual payment ID
+            payment.status = 'success'
+            payment.save()
+            
+            # Finalize the booking
+            final_booking = FinalBooking.objects.create(
+                user=booking_attempt.user,
+                resort=booking_attempt.resort,
+                check_in=booking_attempt.check_in,
+                check_out=booking_attempt.check_out,
+                status='confirmed',
+                payment=payment
+            )
 
-            if webhook_data['event'] == 'payment.captured':
-                payment.status = 'success'
-                payment.save()
-
-                booking_attempt = payment.attempt
-                final_booking = FinalBooking.objects.create(
-                    user=booking_attempt.user,
-                    resort=booking_attempt.resort,
-                    check_in=booking_attempt.check_in,
-                    check_out=booking_attempt.check_out,
-                    status='confirmed',
-                    payment=payment
+            for attempt_room in BookingAttemptRooms.objects.filter(attempt=booking_attempt):
+                BookingRoom.objects.create(booking=final_booking, room=attempt_room.room)
+            
+            for guest_temp in GuestTemp.objects.filter(attempt=booking_attempt):
+                BookingGuest.objects.create(
+                    booking=final_booking,
+                    room=guest_temp.room,
+                    name=guest_temp.name,
+                    age=guest_temp.age
                 )
 
-                for attempt_room in BookingAttemptRooms.objects.filter(attempt=booking_attempt):
-                    BookingRoom.objects.create(booking=final_booking, room=attempt_room.room)
-                
-                for guest_temp in GuestTemp.objects.filter(attempt=booking_attempt):
-                    BookingGuest.objects.create(
-                        booking=final_booking,
-                        room=guest_temp.room,
-                        name=guest_temp.name,
-                        age=guest_temp.age
-                    )
+            booking_attempt.status = 'completed'
+            booking_attempt.save()
 
-                booking_attempt.status = 'completed'
-                booking_attempt.save()
-                return Response({'status': 'ok'}, status=status.HTTP_200_OK)
-            else:
-                payment.status = 'failed'
-                payment.save()
-                booking_attempt = payment.attempt
-                booking_attempt.status = 'failed'
-                booking_attempt.save()
-                return Response({'status': 'failed'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        except (razorpay.errors.SignatureVerificationError, ValueError, KeyError):
-            return Response({'error': 'Invalid signature or payload.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Payment.DoesNotExist:
-            return Response({'error': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+            # TODO: Add a task to send booking confirmation emails
+            # send_booking_emails_task.delay(final_booking.id)
+
+            return Response({
+                "success": True,
+                "message": "Payment verified successfully",
+                "booking_id": final_booking.id
+            })
+
+        except razorpay.errors.SignatureVerificationError:
+            return Response(
+                {"success": False, "message": "Payment verification failed"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            # Generic error for any other issues
+            return Response(
+                {"success": False, "message": f"An unexpected error occurred: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
