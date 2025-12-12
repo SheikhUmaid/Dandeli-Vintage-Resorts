@@ -1,5 +1,6 @@
+
 from rest_framework import serializers
-from .models import User, OTP, Resort, Room, BookingAttempt, FinalBooking, Payment
+from .models import User, OTP, Resort, Room, BookingAttempt, FinalBooking, Payment, RoomImage
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -18,11 +19,17 @@ class ResortSerializer(serializers.ModelSerializer):
         model = Resort
         fields = ('id', 'name', 'location')
 
+class RoomImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoomImage
+        fields = ('id', 'image')
+
 class RoomSerializer(serializers.ModelSerializer):
     resort = ResortSerializer()
+    images = RoomImageSerializer(many=True, read_only=True)
     class Meta:
         model = Room
-        fields = ('id', 'resort', 'room_number', 'capacity')
+        fields = ('id', 'resort', 'room_number', 'capacity', 'images', 'price_per_night')
 
 class BookingAttemptSerializer(serializers.ModelSerializer):
     class Meta:
@@ -39,4 +46,3 @@ class FinalBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = FinalBooking
         fields = '__all__'
-

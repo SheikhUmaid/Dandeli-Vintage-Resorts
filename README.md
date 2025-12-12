@@ -8,12 +8,11 @@ This project is a Django-based REST API for a resort booking system. It features
 - **Phone Number Authentication:** Secure and simple user login/signup using OTP.
 - **Profile Management:** Users can update their personal information.
 - **Robust Booking Flow:** A multi-step process that includes:
-    1.  Searching for available rooms.
-    2.  Creating a temporary "booking attempt".
-    3.  Selecting specific rooms.
-    4.  Adding guest details.
-    5.  Initiating payment with Razorpay.
-    6.  Confirming the booking upon successful payment verification via a secure webhook.
+    1.  Searching for available rooms by location.
+    2.  Creating a temporary "booking attempt" after selecting rooms.
+    3.  Adding guest details.
+    4.  Initiating payment with Razorpay.
+    5.  Confirming the booking upon successful payment verification via a secure webhook.
 - **Scalable Architecture:** The separation of booking attempts from final bookings minimizes race conditions and improves reliability.
 
 ## Getting Started
@@ -128,40 +127,61 @@ The booking process is a sequence of API calls.
 
 #### 1. `GET /api/rooms/search/`
 
-Searches for available rooms. This creates a `BookingAttempt`.
+Searches for available rooms based on location, dates, and number of guests.
 
 **Query Parameters:**
--   `resort_id`: The ID of the resort.
+-   `location`: The desired location (e.g., "Goa").
 -   `check_in_date`: Format `YYYY-MM-DD`.
 -   `check_out_date`: Format `YYYY-MM-DD`.
 -   `guests`: The total number of guests.
 
 **Response:**
+A list of resorts matching the criteria, each with a list of available rooms.
 ```json
-{
-    "booking_attempt_id": 123,
-    "suggested_rooms": [
-        {
-            "id": 1,
-            "room_number": "101",
-            "capacity": 2,
-            "price_per_night": "5000.00"
-        }
-    ]
-}
+[
+    {
+        "resort_id": 1,
+        "resort_name": "Beachside Resort",
+        "location": "Goa",
+        "available_rooms": [
+            {
+                "id": 101,
+                "room_number": "A101",
+                "capacity": 2,
+                "price_per_night": "7500.00",
+                "images": [
+                    {
+                        "image": "/media/room_images/beach_view.jpg"
+                    }
+                ]
+            }
+        ]
+    }
+]
 ```
 
 ---
 
 #### 2. `POST /api/booking/select-rooms/`
 
-Locks in the rooms the user has chosen for their booking attempt.
+Creates a `BookingAttempt` and locks in the rooms the user has chosen.
 
 **Request Body:**
 ```json
 {
-    "booking_attempt_id": 123,
-    "room_ids": [1]
+    "resort_id": 1,
+    "room_ids": [101],
+    "check_in_date": "2024-12-20",
+    "check_out_date": "2024-12-25",
+    "guests": 2
+}
+```
+
+**Response:**
+```json
+{
+    "message": "Rooms selected successfully. Proceed to add guest details.",
+    "booking_attempt_id": 123
 }
 ```
 
@@ -176,7 +196,8 @@ Adds the details for each guest to the booking attempt.
 {
     "booking_attempt_id": 123,
     "guests": [
-        {"room_id": 1, "name": "Alice", "age": 30}
+        {"room_id": 101, "name": "Alice", "age": 30},
+        {"room_id": 101, "name": "Bob", "age": 32}
     ]
 }
 ```
@@ -201,7 +222,7 @@ Calculates the total price and creates a Razorpay order.
     "payment_id": 45,
     "razorpay_order_id": "order_XXXXXXXXXXXXXX",
     "razorpay_key": "rzp_test_XXXXXXXXXXXXXX",
-    "amount": 5000.00
+    "amount": 75000.00
 }
 ```
 The frontend should use the `razorpay_order_id` and `razorpay_key` to open the Razorpay payment dialog.

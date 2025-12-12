@@ -109,24 +109,99 @@ class RoomSearchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        resort_id = request.query_params.get('resort_id')
+        location = request.query_params.get('location')
         check_in_date_str = request.query_params.get('check_in_date')
         check_out_date_str = request.query_params.get('check_out_date')
         guests_str = request.query_params.get('guests')
 
-        if not all([resort_id, check_in_date_str, check_out_date_str, guests_str]):
-            return Response({'error': 'Missing required query parameters.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not all([location, check_in_date_str, check_out_date_str, guests_str]):
+            return Response({'error': 'Missing required query parameters (location, check_in_date, check_out_date, guests).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            check_in_date = datetime.strptime(check_in_date_str, '%Y-%m-%d').date()
+            check_out_date = datetime.strptime(check_out_date_str, '%Y-%m-%d').date()
+            guests = int(guests_str)
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid date format or guest number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if check_in_date >= check_out_date:
+            return Response({'error': 'Check-out date must be after check-in date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        resorts = Resort.objects.filter(location__icontains=location)
+        if not resorts.exists():
+            return Response({'message': 'No resorts found in the specified location.'}, status=status.HTTP_404_NOT_FOUND)
+
+        results = []
+        for resort in resorts:
+            overlapping_bookings = FinalBooking.objects.filter(
+                resort=resort,
+                check_in__lt=check_out_date,
+                check_out__gt=check_in_date,
+                status='confirmed'
+            )
+            booked_room_pks = BookingRoom.objects.filter(booking__in=overlapping_bookings).values_list('room__pk', flat=True)
+
+            available_rooms = Room.objects.filter(resort=resort).exclude(pk__in=booked_room_pks)
+            
+            total_capacity = available_rooms.aggregate(total_capacity=Sum('capacity'))['total_capacity'] or 0
+            
+            if total_capacity >= guests:
+                resort_data = {
+                    'resort_id': resort.id,
+                    'resort_name': resort.name,
+                    'location': resort.location,
+                    'available_rooms': RoomSerializer(available_rooms, many=True).data
+                }
+                results.append(resort_data)
+
+        if not results:
+             return Response({'message': 'No rooms available for the selected criteria in this location.'}, status=status.HTTP_200_OK)
+
+        return Response(results, status=status.HTTP_200_OK)
+
+class SelectRoomView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        resort_id = request.data.get('resort_id')
+        room_ids = request.data.get('room_ids')
+        check_in_date_str = request.data.get('check_in_date')
+        check_out_date_str = request.data.get('check_out_date')
+        guests_str = request.data.get('guests')
+
+        if not all([resort_id, room_ids, check_in_date_str, check_out_date_str, guests_str]):
+            return Response({'error': 'Missing required fields (resort_id, room_ids, check_in_date, check_out_date, guests).'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             resort = Resort.objects.get(pk=resort_id)
             check_in_date = datetime.strptime(check_in_date_str, '%Y-%m-%d').date()
             check_out_date = datetime.strptime(check_out_date_str, '%Y-%m-%d').date()
             guests = int(guests_str)
+            rooms = Room.objects.filter(pk__in=room_ids, resort=resort)
         except (Resort.DoesNotExist, ValueError, TypeError):
             return Response({'error': 'Invalid resort ID, date format or guest number.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if len(room_ids) != rooms.count():
+            return Response({'error': 'Some selected rooms do not belong to the specified resort.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if check_in_date >= check_out_date:
-            return Response({'error': 'Check-out date must be after check-in date.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Validate room selection
+        total_capacity = rooms.aggregate(Sum('capacity'))['capacity__sum'] or 0
+        if total_capacity < guests:
+            return Response({'error': 'The selected rooms do not have enough capacity for all guests.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Verify rooms are actually available
+        overlapping_bookings = FinalBooking.objects.filter(
+            resort=resort,
+            check_in__lt=check_out_date,
+            check_out__gt=check_in_date,
+            status='confirmed'
+        )
+        booked_room_pks = BookingRoom.objects.filter(booking__in=overlapping_bookings).values_list('room__pk', flat=True)
+        
+        for room_id in room_ids:
+            if room_id in booked_room_pks:
+                return Response({'error': f'Room with id {room_id} is not available for the selected dates.'}, status=status.HTTP_400_BAD_REQUEST)
+
 
         # Create a booking attempt
         booking_attempt = BookingAttempt.objects.create(
@@ -135,55 +210,16 @@ class RoomSearchView(APIView):
             check_in=check_in_date,
             check_out=check_out_date,
             guest_count=guests,
-            expires_at=timezone.now() + timedelta(minutes=30) # Set an expiration time for the attempt
+            expires_at=timezone.now() + timedelta(minutes=30)
         )
-
-        # Find available rooms
-        overlapping_bookings = FinalBooking.objects.filter(
-            resort=resort,
-            check_in__lt=check_out_date,
-            check_out__gt=check_in_date,
-            status='confirmed'
-        )
-        booked_room_pks = BookingRoom.objects.filter(booking__in=overlapping_bookings).values_list('room__pk', flat=True)
-
-        available_rooms = Room.objects.filter(resort=resort).exclude(pk__in=booked_room_pks)
-
-        # Suggest rooms
-        # This is a simplified suggestion logic. A more complex algorithm could be used here.
-        suggested_rooms = available_rooms.filter(capacity__gte=guests)
-        if not suggested_rooms.exists():
-            # A more sophisticated suggestion logic can be implemented here to combine multiple rooms
-            return Response({'message': 'No single room available that can accommodate all guests. Please try booking multiple rooms.', 'booking_attempt_id': booking_attempt.id}, status=status.HTTP_200_OK)
-
-        serializer = RoomSerializer(suggested_rooms, many=True)
-        return Response({'booking_attempt_id': booking_attempt.id, 'suggested_rooms': serializer.data}, status=status.HTTP_200_OK)
-
-class SelectRoomView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        booking_attempt_id = request.data.get('booking_attempt_id')
-        room_ids = request.data.get('room_ids')
-
-        if not booking_attempt_id or not room_ids:
-            return Response({'error': 'Booking attempt ID and room IDs are required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            booking_attempt = BookingAttempt.objects.get(pk=booking_attempt_id, user=request.user)
-            rooms = Room.objects.filter(pk__in=room_ids)
-        except BookingAttempt.DoesNotExist:
-            return Response({'error': 'Invalid booking attempt ID.'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Validate room selection
-        total_capacity = rooms.aggregate(Sum('capacity'))['capacity__sum'] or 0
-        if total_capacity < booking_attempt.guest_count:
-            return Response({'error': 'The selected rooms do not have enough capacity for all guests.'}, status=status.HTTP_400_BAD_REQUEST)
 
         for room in rooms:
             BookingAttemptRooms.objects.create(attempt=booking_attempt, room=room)
 
-        return Response({'message': 'Rooms selected successfully.'}, status=status.HTTP_200_OK)
+        return Response({
+            'message': 'Rooms selected successfully. Proceed to add guest details.',
+            'booking_attempt_id': booking_attempt.id
+        }, status=status.HTTP_200_OK)
 
 class AddGuestDetailsView(APIView):
     permission_classes = [IsAuthenticated]

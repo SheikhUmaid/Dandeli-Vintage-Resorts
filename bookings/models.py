@@ -1,3 +1,4 @@
+
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 import random
@@ -77,6 +78,13 @@ class Room(models.Model):
 
     def __str__(self):
         return f"Room {self.room_number} at {self.resort.name}"
+
+class RoomImage(models.Model):
+    room = models.ForeignKey(Room, related_name='images', on_delete=models.CASCADE)
+    image = models.ImageField(upload_to='room_images/')
+
+    def __str__(self):
+        return f"Image for Room {self.room.room_number}"
 
 class BookingAttempt(models.Model):
     STATUS_CHOICES = (
