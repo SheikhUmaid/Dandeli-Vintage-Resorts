@@ -4,9 +4,7 @@ import random
 from django.utils import timezone
 from datetime import timedelta
 
-# Create your models here.
-
-#============= Authentication Models Start ======
+#============= Authentication Models Start ======"
 class UserManager(BaseUserManager):
     def create_user(self, phone_number, password=None, **extra_fields):
         if not phone_number:
@@ -62,98 +60,80 @@ class OTP(models.Model):
 #============= Authentication Models End ======"
 
 
-#============= Resort Room Booking Models Start ======
+#============= Resort Room Booking Models Start ======"
 
 class Resort(models.Model):
     name = models.CharField(max_length=100, unique=True)
-    address = models.TextField()
-    description = models.TextField()
-    contact_number = models.CharField(max_length=20)
-    email = models.EmailField()
+    location = models.CharField(max_length=255)
 
     def __str__(self):
         return self.name
 
-class RoomType(models.Model):
-    resort = models.ForeignKey(Resort, on_delete=models.CASCADE, blank=True, null= True)
-    name = models.CharField(max_length=100)
-    description = models.TextField()
-
-    def __str__(self):
-        return f"{self.name} - {self.resort.name}"
-
 class Room(models.Model):
-    resort = models.ForeignKey(Resort, on_delete=models.CASCADE, blank=True, null= True)
+    resort = models.ForeignKey(Resort, on_delete=models.CASCADE)
     room_number = models.CharField(max_length=10)
-    room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE)
-    price_per_night = models.DecimalField(max_digits=10, decimal_places=2)
     capacity = models.PositiveIntegerField()
-    is_available = models.BooleanField(default=True)
-
-    class Meta:
-        unique_together = ('resort', 'room_number')
+    price_per_night = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
     def __str__(self):
         return f"Room {self.room_number} at {self.resort.name}"
 
-class RoomImage(models.Model):
-    room = models.ForeignKey(Room, related_name='images', on_delete=models.CASCADE)
-    image = models.ImageField(upload_to='room_images/')
-
-    def __str__(self):
-        return f"Image for {self.room.room_number}"
-
-class Coupon(models.Model):
-    code = models.CharField(max_length=50, unique=True)
-    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2)
-    valid_from = models.DateField()
-    valid_to = models.DateField()
-    is_active = models.BooleanField(default=True)
-
-    def __str__(self):
-        return self.code
-
-class Booking(models.Model):
-    BOOKING_STATUS_CHOICES = (
-        ('Pending', 'Pending'),
-        ('Confirmed', 'Confirmed'),
-        ('Cancelled', 'Cancelled'),
+class BookingAttempt(models.Model):
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('expired', 'Expired'),
+        ('failed', 'Failed'),
+        ('completed', 'Completed'),
     )
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    room = models.ForeignKey(Room, on_delete=models.CASCADE)
-    check_in_date = models.DateField()
-    check_out_date = models.DateField()
-    number_of_guests = models.PositiveIntegerField()
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
-    coupon = models.ForeignKey(Coupon, on_delete=models.SET_NULL, null=True, blank=True)
-    booking_status = models.CharField(max_length=20, choices=BOOKING_STATUS_CHOICES, default='Pending')
-    created_at = models.DateTimeField(auto_now_add=True)
+    resort = models.ForeignKey(Resort, on_delete=models.CASCADE)
+    check_in = models.DateField()
+    check_out = models.DateField()
+    guest_count = models.PositiveIntegerField()
+    expires_at = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
-    def __str__(self):
-        return f"Booking for {self.room.room_number} by {self.user.phone_number}"
+class BookingAttemptRooms(models.Model):
+    attempt = models.ForeignKey(BookingAttempt, on_delete=models.CASCADE)
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
+
+class GuestTemp(models.Model):
+    attempt = models.ForeignKey(BookingAttempt, on_delete=models.CASCADE)
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    age = models.PositiveIntegerField()
 
 class Payment(models.Model):
-    PAYMENT_STATUS_CHOICES = (
-        ('Pending', 'Pending'),
-        ('Completed', 'Completed'),
-        ('Failed', 'Failed'),
+    STATUS_CHOICES = (
+        ('initiated', 'Initiated'),
+        ('success', 'Success'),
+        ('failed', 'Failed'),
     )
-    PAYMENT_METHOD_CHOICES = (
-        ('Credit Card', 'Credit Card'),
-        ('Debit Card', 'Debit Card'),
-        ('UPI', 'UPI'),
-        ('Razorpay', 'Razorpay'),
+    attempt = models.ForeignKey(BookingAttempt, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    provider = models.CharField(max_length=50)
+    provider_payment_id = models.CharField(max_length=100)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='initiated')
+
+class FinalBooking(models.Model):
+    STATUS_CHOICES = (
+        ('confirmed', 'Confirmed'),
+        ('cancelled', 'Cancelled'),
     )
-    booking = models.OneToOneField(Booking, on_delete=models.CASCADE)
-    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES)
-    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='Pending')
-    transaction_id = models.CharField(max_length=100, blank=True, null=True)
-    razorpay_order_id = models.CharField(max_length=100, blank=True, null=True)
-    razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)
-    razorpay_signature = models.CharField(max_length=200, blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    resort = models.ForeignKey(Resort, on_delete=models.CASCADE)
+    check_in = models.DateField()
+    check_out = models.DateField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='confirmed')
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE)
 
-    def __str__(self):
-        return f"Payment for Booking {self.booking.id}"
+class BookingRoom(models.Model):
+    booking = models.ForeignKey(FinalBooking, on_delete=models.CASCADE)
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
 
-#============= Resort Room Booking Models End ======
+class BookingGuest(models.Model):
+    booking = models.ForeignKey(FinalBooking, on_delete=models.CASCADE)
+    room = models.ForeignKey(Room, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    age = models.PositiveIntegerField()
+#============= Resort Room Booking Models End ======"

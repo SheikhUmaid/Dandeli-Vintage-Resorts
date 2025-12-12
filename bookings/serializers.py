@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, OTP, Resort, RoomType, Room, RoomImage, Booking, Payment, Coupon
+from .models import User, OTP, Resort, Room, BookingAttempt, FinalBooking, Payment
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,43 +16,27 @@ class VerifyOTPSerializer(serializers.Serializer):
 class ResortSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resort
-        fields = '__all__'
-
-class RoomTypeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RoomType
-        fields = '__all__'
-
-class RoomImageSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RoomImage
-        fields = ('image',)
+        fields = ('id', 'name', 'location')
 
 class RoomSerializer(serializers.ModelSerializer):
-    images = RoomImageSerializer(many=True, read_only=True)
-    room_type = RoomTypeSerializer(read_only=True)
-
+    resort = ResortSerializer()
     class Meta:
         model = Room
-        fields = ('id', 'room_number', 'room_type', 'price_per_night', 'capacity', 'is_available', 'images')
+        fields = ('id', 'resort', 'room_number', 'capacity')
 
-class CouponSerializer(serializers.ModelSerializer):
+class BookingAttemptSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Coupon
-        fields = '__all__'
-
-class BookingSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    room = RoomSerializer(read_only=True)
-    coupon = CouponSerializer(read_only=True)
-
-    class Meta:
-        model = Booking
+        model = BookingAttempt
         fields = '__all__'
 
 class PaymentSerializer(serializers.ModelSerializer):
-    booking = BookingSerializer(read_only=True)
-
     class Meta:
         model = Payment
         fields = '__all__'
+
+class FinalBookingSerializer(serializers.ModelSerializer):
+    payment = PaymentSerializer()
+    class Meta:
+        model = FinalBooking
+        fields = '__all__'
+

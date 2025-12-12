@@ -1,11 +1,22 @@
 from django.urls import path
-from .views import RoomSearchView, BookingView, request_otp, verify_otp, UpdateProfileView, UserBookingsView
+from .views import (
+    request_otp, 
+    verify_otp, 
+    UpdateProfileView, 
+    RoomSearchView, 
+    SelectRoomView, 
+    AddGuestDetailsView, 
+    InitiatePaymentView, 
+    PaymentCallbackView
+)
 
 urlpatterns = [
     path('auth/otp/request/', request_otp, name='request_otp'),
     path('auth/otp/verify/', verify_otp, name='verify_otp'),
     path('auth/profile/update/', UpdateProfileView.as_view(), name='update_profile'),
     path('rooms/search/', RoomSearchView.as_view(), name='room-search'),
-    path('bookings/create/', BookingView.as_view(), name='booking-create'),
-    path('bookings/', UserBookingsView.as_view(), name='user-bookings'),
+    path('booking/select-rooms/', SelectRoomView.as_view(), name='select-rooms'),
+    path('booking/add-guests/', AddGuestDetailsView.as_view(), name='add-guests'),
+    path('booking/initiate-payment/', InitiatePaymentView.as_view(), name='initiate-payment'),
+    path('booking/payment-callback/', PaymentCallbackView.as_view(), name='payment-callback'),
 ]

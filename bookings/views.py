@@ -1,15 +1,19 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Room, Booking, Resort, OTP, User, Coupon
-from .serializers import RoomSerializer, BookingSerializer
+from .models import Room, Resort, OTP, User, BookingAttempt, BookingAttemptRooms, GuestTemp, Payment, FinalBooking, BookingRoom, BookingGuest
+from .serializers import RoomSerializer
 from django.db.models import Q, Sum
-from datetime import datetime
+from datetime import datetime, timedelta
 from rest_framework.decorators import api_view
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from decimal import Decimal
+import razorpay
+from django.conf import settings
+from django.views.decorators.csrf import csrf_exempt
+import json
 
 # Request OTP
 @api_view(['POST'])
@@ -102,145 +106,209 @@ class UpdateProfileView(APIView):
 
 
 class RoomSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        location = request.query_params.get('location')
+        resort_id = request.query_params.get('resort_id')
         check_in_date_str = request.query_params.get('check_in_date')
         check_out_date_str = request.query_params.get('check_out_date')
         guests_str = request.query_params.get('guests')
 
-        if not all([location, check_in_date_str, check_out_date_str, guests_str]):
+        if not all([resort_id, check_in_date_str, check_out_date_str, guests_str]):
             return Response({'error': 'Missing required query parameters.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            resort = Resort.objects.get(pk=resort_id)
             check_in_date = datetime.strptime(check_in_date_str, '%Y-%m-%d').date()
             check_out_date = datetime.strptime(check_out_date_str, '%Y-%m-%d').date()
             guests = int(guests_str)
-        except (ValueError, TypeError):
-            return Response({'error': 'Invalid date format or guest number.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        if guests > 8:
-            return Response({'error': 'A maximum of 8 guests are allowed per booking.'}, status=status.HTTP_400_BAD_REQUEST)
+        except (Resort.DoesNotExist, ValueError, TypeError):
+            return Response({'error': 'Invalid resort ID, date format or guest number.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if check_in_date >= check_out_date:
             return Response({'error': 'Check-out date must be after check-in date.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        overlapping_bookings = Booking.objects.filter(
-            Q(check_in_date__lt=check_out_date) & Q(check_out_date__gt=check_in_date)
+        # Create a booking attempt
+        booking_attempt = BookingAttempt.objects.create(
+            user=request.user,
+            resort=resort,
+            check_in=check_in_date,
+            check_out=check_out_date,
+            guest_count=guests,
+            expires_at=timezone.now() + timedelta(minutes=30) # Set an expiration time for the attempt
         )
-        booked_room_pks = overlapping_bookings.values_list('room__pk', flat=True)
 
-        all_available_rooms = Room.objects.filter(
-            resort__address__icontains=location,
-            is_available=True
-        ).exclude(pk__in=booked_room_pks)
+        # Find available rooms
+        overlapping_bookings = FinalBooking.objects.filter(
+            resort=resort,
+            check_in__lt=check_out_date,
+            check_out__gt=check_in_date,
+            status='confirmed'
+        )
+        booked_room_pks = BookingRoom.objects.filter(booking__in=overlapping_bookings).values_list('room__pk', flat=True)
 
-        # First, try to find single rooms that can accommodate the guests
-        single_rooms = all_available_rooms.filter(capacity__gte=guests)
-        if single_rooms.exists():
-            serializer = RoomSerializer(single_rooms, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
+        available_rooms = Room.objects.filter(resort=resort).exclude(pk__in=booked_room_pks)
 
-        # If no single room is found, check for resorts that can fit the party
-        resort_ids = all_available_rooms.values_list('resort__id', flat=True).distinct()
-        multi_room_options = Room.objects.none()
+        # Suggest rooms
+        # This is a simplified suggestion logic. A more complex algorithm could be used here.
+        suggested_rooms = available_rooms.filter(capacity__gte=guests)
+        if not suggested_rooms.exists():
+            # A more sophisticated suggestion logic can be implemented here to combine multiple rooms
+            return Response({'message': 'No single room available that can accommodate all guests. Please try booking multiple rooms.', 'booking_attempt_id': booking_attempt.id}, status=status.HTTP_200_OK)
 
-        for resort_id in resort_ids:
-            rooms_in_resort = all_available_rooms.filter(resort__id=resort_id)
-            total_capacity = rooms_in_resort.aggregate(total=Sum('capacity'))['total'] or 0
-            if total_capacity >= guests:
-                multi_room_options |= rooms_in_resort
-        
-        if multi_room_options.exists():
-            serializer = RoomSerializer(multi_room_options.distinct(), many=True)
-            return Response({
-                'message': 'No single room is large enough. You can book multiple rooms at these resorts.',
-                'rooms': serializer.data
-            }, status=status.HTTP_200_OK)
+        serializer = RoomSerializer(suggested_rooms, many=True)
+        return Response({'booking_attempt_id': booking_attempt.id, 'suggested_rooms': serializer.data}, status=status.HTTP_200_OK)
 
-        return Response([], status=status.HTTP_200_OK)
-
-class BookingView(APIView):
+class SelectRoomView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        """
-        Create a new booking.
-        """
-        room_id = request.data.get('room_id')
-        check_in_date_str = request.data.get('check_in_date')
-        check_out_date_str = request.data.get('check_out_date')
-        number_of_guests = request.data.get('number_of_guests')
-        coupon_code = request.data.get('coupon_code')
+        booking_attempt_id = request.data.get('booking_attempt_id')
+        room_ids = request.data.get('room_ids')
 
-        if not all([room_id, check_in_date_str, check_out_date_str, number_of_guests]):
-            return Response({'error': 'Missing required fields (room_id, check_in_date, check_out_date, number_of_guests).'}, status=status.HTTP_400_BAD_REQUEST)
+        if not booking_attempt_id or not room_ids:
+            return Response({'error': 'Booking attempt ID and room IDs are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            room = Room.objects.get(pk=room_id)
-            check_in_date = datetime.strptime(check_in_date_str, '%Y-%m-%d').date()
-            check_out_date = datetime.strptime(check_out_date_str, '%Y-%m-%d').date()
-            guests = int(number_of_guests)
-        except (Room.DoesNotExist, ValueError, TypeError):
-            return Response({'error': 'Invalid room ID, date format, or guest number.'}, status=status.HTTP_400_BAD_REQUEST)
+            booking_attempt = BookingAttempt.objects.get(pk=booking_attempt_id, user=request.user)
+            rooms = Room.objects.filter(pk__in=room_ids)
+        except BookingAttempt.DoesNotExist:
+            return Response({'error': 'Invalid booking attempt ID.'}, status=status.HTTP_404_NOT_FOUND)
 
-        if guests > 8:
-            return Response({'error': 'A maximum of 8 guests are allowed per booking.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Validate room selection
+        total_capacity = rooms.aggregate(Sum('capacity'))['capacity__sum'] or 0
+        if total_capacity < booking_attempt.guest_count:
+            return Response({'error': 'The selected rooms do not have enough capacity for all guests.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if check_in_date >= check_out_date:
-            return Response({'error': 'Check-out date must be after check-in date.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        if guests > room.capacity:
-            return Response({'error': f'The selected room can only accomodate {room.capacity} guests.'}, status=status.HTTP_400_BAD_REQUEST)
+        for room in rooms:
+            BookingAttemptRooms.objects.create(attempt=booking_attempt, room=room)
 
-        # Check for overlapping bookings
-        overlapping_bookings = Booking.objects.filter(
-            room=room,
-            check_in_date__lt=check_out_date,
-            check_out_date__gt=check_in_date
-        )
-        if overlapping_bookings.exists():
-            return Response({'error': 'This room is not available for the selected dates.'}, status=status.HTTP_409_CONFLICT)
+        return Response({'message': 'Rooms selected successfully.'}, status=status.HTTP_200_OK)
 
-        # Calculate total price
-        duration = (check_out_date - check_in_date).days
-        total_price = room.price_per_night * duration
-
-        # Handle coupon
-        coupon_instance = None
-        if coupon_code:
-            try:
-                coupon_instance = Coupon.objects.get(
-                    code=coupon_code,
-                    is_active=True,
-                    valid_from__lte=timezone.now().date(),
-                    valid_to__gte=timezone.now().date()
-                )
-                discount = (coupon_instance.discount_percentage / Decimal(100)) * total_price
-                total_price -= discount
-            except Coupon.DoesNotExist:
-                return Response({'error': 'Invalid or expired coupon code.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Create booking
-        booking = Booking.objects.create(
-            user=request.user,
-            room=room,
-            check_in_date=check_in_date,
-            check_out_date=check_out_date,
-            number_of_guests=guests,
-            total_price=total_price,
-            coupon=coupon_instance
-        )
-
-        serializer = BookingSerializer(booking)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-class UserBookingsView(APIView):
+class AddGuestDetailsView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        """
-        Retrieve a list of bookings for the current user.
-        """
-        bookings = Booking.objects.filter(user=request.user).order_by('-booking_date')
-        serializer = BookingSerializer(bookings, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+    def post(self, request):
+        booking_attempt_id = request.data.get('booking_attempt_id')
+        guests = request.data.get('guests') # List of guest details
+
+        if not booking_attempt_id or not guests:
+            return Response({'error': 'Booking attempt ID and guest details are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            booking_attempt = BookingAttempt.objects.get(pk=booking_attempt_id, user=request.user)
+        except BookingAttempt.DoesNotExist:
+            return Response({'error': 'Invalid booking attempt ID.'}, status=status.HTTP_404_NOT_FOUND)
+
+        for guest_data in guests:
+            GuestTemp.objects.create(
+                attempt=booking_attempt,
+                room_id=guest_data['room_id'],
+                name=guest_data['name'],
+                age=guest_data['age']
+            )
+
+        return Response({'message': 'Guest details added successfully.'}, status=status.HTTP_200_OK)
+
+class InitiatePaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        booking_attempt_id = request.data.get('booking_attempt_id')
+
+        if not booking_attempt_id:
+            return Response({'error': 'Booking attempt ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            booking_attempt = BookingAttempt.objects.get(pk=booking_attempt_id, user=request.user)
+        except BookingAttempt.DoesNotExist:
+            return Response({'error': 'Invalid booking attempt ID.'}, status=status.HTTP_404_NOT_FOUND)
+
+        total_price = 0
+        attempt_rooms = BookingAttemptRooms.objects.filter(attempt=booking_attempt)
+        duration = (booking_attempt.check_out - booking_attempt.check_in).days
+        for attempt_room in attempt_rooms:
+            total_price += attempt_room.room.price_per_night * duration
+
+        client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+        payment_data = {
+            'amount': int(total_price * 100),  # Amount in paisa
+            'currency': 'INR',
+            'receipt': f'booking_{booking_attempt_id}',
+            'payment_capture': 1
+        }
+        order = client.order.create(data=payment_data)
+
+        payment = Payment.objects.create(
+            attempt=booking_attempt,
+            amount=total_price,
+            provider='Razorpay',
+            status='initiated',
+            provider_payment_id=order['id']
+        )
+
+        return Response({
+            'message': 'Payment initiated.',
+            'payment_id': payment.id,
+            'razorpay_order_id': order['id'],
+            'razorpay_key': settings.RAZORPAY_KEY_ID,
+            'amount': total_price
+        }, status=status.HTTP_200_OK)
+
+
+class PaymentCallbackView(APIView):
+    @csrf_exempt
+    def post(self, request):
+        client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+        try:
+            body = request.body.decode('utf-8')
+            signature = request.headers.get('x-razorpay-signature', '')
+            client.utility.verify_webhook_signature(body, signature, settings.RAZORPAY_WEBHOOK_SECRET)
+            
+            webhook_data = json.loads(body)
+            razorpay_order_id = webhook_data['payload']['payment']['entity']['order_id']
+            razorpay_payment_id = webhook_data['payload']['payment']['entity']['id']
+
+            payment = Payment.objects.get(provider_payment_id=razorpay_order_id)
+            payment.provider_payment_id = razorpay_payment_id # Store the actual payment ID
+
+            if webhook_data['event'] == 'payment.captured':
+                payment.status = 'success'
+                payment.save()
+
+                booking_attempt = payment.attempt
+                final_booking = FinalBooking.objects.create(
+                    user=booking_attempt.user,
+                    resort=booking_attempt.resort,
+                    check_in=booking_attempt.check_in,
+                    check_out=booking_attempt.check_out,
+                    status='confirmed',
+                    payment=payment
+                )
+
+                for attempt_room in BookingAttemptRooms.objects.filter(attempt=booking_attempt):
+                    BookingRoom.objects.create(booking=final_booking, room=attempt_room.room)
+                
+                for guest_temp in GuestTemp.objects.filter(attempt=booking_attempt):
+                    BookingGuest.objects.create(
+                        booking=final_booking,
+                        room=guest_temp.room,
+                        name=guest_temp.name,
+                        age=guest_temp.age
+                    )
+
+                booking_attempt.status = 'completed'
+                booking_attempt.save()
+                return Response({'status': 'ok'}, status=status.HTTP_200_OK)
+            else:
+                payment.status = 'failed'
+                payment.save()
+                booking_attempt = payment.attempt
+                booking_attempt.status = 'failed'
+                booking_attempt.save()
+                return Response({'status': 'failed'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        except (razorpay.errors.SignatureVerificationError, ValueError, KeyError):
+            return Response({'error': 'Invalid signature or payload.'}, status=status.HTTP_400_BAD_REQUEST)
+        except Payment.DoesNotExist:
+            return Response({'error': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
