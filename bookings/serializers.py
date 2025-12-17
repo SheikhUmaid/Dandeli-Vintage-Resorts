@@ -17,7 +17,7 @@ class VerifyOTPSerializer(serializers.Serializer):
 class ResortSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resort
-        fields = ('id', 'name', 'location')
+        fields = ('id', 'name', 'location', 'description', 'aminities')
 
 class RoomImageSerializer(serializers.ModelSerializer):
     class Meta:
@@ -29,7 +29,7 @@ class RoomSerializer(serializers.ModelSerializer):
     images = RoomImageSerializer(many=True, read_only=True)
     class Meta:
         model = Room
-        fields = ('id', 'resort', 'room_number', 'capacity', 'images', 'price_per_night')
+        fields = ('id', 'resort', 'room_number', 'capacity', 'images', 'price_per_night', 'room_aminities')
 
 class BookingAttemptSerializer(serializers.ModelSerializer):
     class Meta:

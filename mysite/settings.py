@@ -143,9 +143,14 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Razorpay Configuration
-RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID')
-RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET')
-RAZORPAY_WEBHOOK_SECRET = os.environ.get('RAZORPAY_WEBHOOK_SECRET')
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', "rzp_test_Rqnbhsx1OtNIFl")
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', "CBvZ3KgtO2ngi6J85axR0ZQI")
+# RAZORPAY_WEBHOOK_SECRET = os.environ.get('RAZORPAY_WEBHOOK_SECRET')
+
+
+print("Razorpay Key ID:", RAZORPAY_KEY_ID)
+print("Razorpay Key Secret:", RAZORPAY_KEY_SECRET)
+
 
 # Partial Payment Configuration
 PARTIAL_PAYMENT_PERCENTAGE = 30 # Percentage of total amount for partial payment
